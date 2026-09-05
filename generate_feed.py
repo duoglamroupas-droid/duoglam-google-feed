@@ -111,6 +111,8 @@ def build_item_xml(detail):
     link = detail.get("url")
     if not link:
         return None
+    if not link.startswith("http"):
+        link = STORE_URL.rstrip("/") + "/" + link.lstrip("/")
 
     descricao = strip_html(detail.get("descricao_completa")) or nome
 
@@ -169,17 +171,36 @@ def build_item_xml(detail):
     return "\n".join(parts)
 
 
+def diagnosticar_motivo(detail):
+    if not detail.get("sku"):
+        return "sem SKU"
+    if not detail.get("url"):
+        return "sem URL"
+    if detail.get("preco_cheio") is None:
+        return "sem preco_cheio"
+    imagem_principal = detail.get("imagem_principal") or {}
+    if not imagem_principal.get("grande"):
+        return "sem imagem_principal"
+    return "motivo desconhecido"
+
+
 def generate_feed():
     items_xml = []
     total_vistos = 0
     total_incluidos = 0
+    pulados_inativo_removido = 0
+    pulados_tipo = 0
+    pulados_sem_dados = []
+    erros = []
 
     for resumo in li_list_products():
         total_vistos += 1
 
         if resumo.get("removido") or not resumo.get("ativo"):
+            pulados_inativo_removido += 1
             continue
         if resumo.get("tipo") not in SELLABLE_TYPES:
+            pulados_tipo += 1
             continue
 
         try:
@@ -188,12 +209,25 @@ def generate_feed():
             if item_xml:
                 items_xml.append(item_xml)
                 total_incluidos += 1
+            else:
+                motivo = diagnosticar_motivo(detail)
+                pulados_sem_dados.append((detail.get("sku"), detail.get("id"), motivo))
         except Exception as exc:
+            erros.append((resumo.get("id"), str(exc)))
             logger.warning("Erro no produto %s: %s", resumo.get("id"), exc)
 
         time.sleep(SLEEP_BETWEEN_CALLS)
 
     logger.info("Vistos: %d, Incluídos no feed: %d", total_vistos, total_incluidos)
+    logger.info("Pulados (inativo/removido): %d", pulados_inativo_removido)
+    logger.info("Pulados (tipo não vendável, ex: 'atributo' pai): %d", pulados_tipo)
+    logger.info("Pulados (faltando dado obrigatório): %d", len(pulados_sem_dados))
+    for sku, pid, motivo in pulados_sem_dados:
+        logger.info("  -> SKU=%s ID=%s motivo=%s", sku, pid, motivo)
+    if erros:
+        logger.info("Erros de requisição: %d", len(erros))
+        for pid, err in erros:
+            logger.info("  -> ID=%s erro=%s", pid, err)
 
     feed = (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
